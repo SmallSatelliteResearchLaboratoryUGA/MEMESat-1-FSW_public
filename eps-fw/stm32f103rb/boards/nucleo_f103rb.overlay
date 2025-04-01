@@ -1,0 +1,116 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/{
+	zephyr,user {
+		/* adjust channel number according to pinmux in board.dts */
+		// io-channels = <&adc1 0>;
+	};
+	aliases {
+		uart-obc = &usart1;
+	};
+};
+
+&usart1 {
+	dmas = <&dma1 4 0x440>,
+	       <&dma1 5 0x480>;
+	dma-names = "tx", "rx";
+};
+
+&dma1 {
+	status = "okay";
+};
+
+&i2c1 {
+	compatible="st,stm32-i2c-v1";
+	status = "okay";
+    clock-frequency = <I2C_BITRATE_FAST>;
+
+	sensor1: ina219@40 {
+		status = "okay";
+		compatible = "ti,ina219";
+		reg = <0x40>;
+		brng = <0>;
+		pg = <0>;
+		sadc = <13>;
+		badc = <13>;
+		shunt-milliohm = <100>;
+		lsb-microamp = <10>;
+	};
+
+	sensor2: ina219@41 {
+		compatible = "ti,ina219";
+		reg = <0x41>;
+		label = "ina5v2";
+		shunt-milliohm = <100>;
+		lsb-microamp = <10>;
+	};
+
+	/*
+	sensor3: ina219@42 {
+	    compatible = "ti,ina219";
+	    reg = <0x42>;
+	    label = "ina3v1";
+	    shunt-milliohm = <100>;
+	    lsb-microamp = <10>;
+	};
+
+	sensor4: ina219@43 {
+	    compatible = "ti,ina219";
+	    reg = <0x43>;
+	    label = "ina3v2";
+	    shunt-milliohm = <100>;
+	    lsb-microamp = <10>;
+	};
+
+	sensor5: ina219@44 {
+	    compatible = "ti,ina219";
+	    reg = <0x44>;
+	    label = "VB1";
+	    shunt-milliohm = <100>;
+	    lsb-microamp = <10>;
+	};
+
+	sensor6: ina219@45 {
+	 	compatible = "ti,ina219";
+	 	reg = <0x45>;
+	 	label = "VB2";
+	 	shunt-milliohm = <100>;
+	 	lsb-microamp = <10>;
+	};
+
+	sensor7: ina219@46 {
+	 	compatible = "ti,ina219";
+	 	reg = <0x46>;
+	 	label = "PACK+";
+	 	shunt-milliohm = <100>;
+	 	lsb-microamp = <10>;
+	};
+	
+	sensor8: ina219@47 {
+	  	compatible = "ti,ina219";
+	 	reg = <0x47>;
+	 	label = "VMPPT";
+	 	shunt-milliohm = <100>;
+	    lsb-microamp = <10>;
+	};
+	*/
+
+};
+
+/*
+&adc1 {
+ 	#address-cells = <1>;
+ 	#size-cells = <0>;
+
+ 	channel@0 {
+ 		reg = <0>;
+ 		zephyr,gain = "ADC_GAIN_1";
+ 		zephyr,reference = "ADC_REF_INTERNAL";
+ 		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+ 		zephyr,resolution = <12>;
+		
+ 	};
+};
+*/

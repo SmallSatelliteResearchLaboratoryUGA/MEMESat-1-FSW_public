@@ -1,0 +1,7 @@
+<<<<<<< HEAD
+/usr/bin/ar qc /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc/ms1/libs/libcron/libcron/out/liblibcron.a CMakeFiles/libcron.dir/src/CronClock.cpp.o CMakeFiles/libcron.dir/src/CronData.cpp.o CMakeFiles/libcron.dir/src/CronRandomization.cpp.o CMakeFiles/libcron.dir/src/CronSchedule.cpp.o CMakeFiles/libcron.dir/src/Task.cpp.o
+/usr/bin/ranlib /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc/ms1/libs/libcron/libcron/out/liblibcron.a
+=======
+/usr/bin/ar qc /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc-v3.5.0/ms1/libs/libcron_v1.3.1/libcron/out/liblibcron.a CMakeFiles/libcron.dir/src/CronClock.cpp.o CMakeFiles/libcron.dir/src/CronData.cpp.o CMakeFiles/libcron.dir/src/CronRandomization.cpp.o CMakeFiles/libcron.dir/src/CronSchedule.cpp.o CMakeFiles/libcron.dir/src/Task.cpp.o
+/usr/bin/ranlib /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc-v3.5.0/ms1/libs/libcron_v1.3.1/libcron/out/liblibcron.a
+>>>>>>> main

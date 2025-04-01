@@ -1,0 +1,599 @@
+// ======================================================================
+// \title  EpsUart.cpp
+// \author g83r
+// \brief  cpp file for EpsUart component implementation class
+// ======================================================================
+
+#include "Components/EpsUart/EpsUart.hpp"
+#include "FpConfig.hpp"
+#include <Fw/Types/BasicTypes.hpp>
+#include "Fw/Types/StringUtils.hpp"
+#include <ctype.h>
+// Testing import -- Start 
+#include <sstream> 
+#include <iomanip> 
+#include <string> 
+#include <iostream>
+#include <stdio.h>
+// Testing import -- End
+
+namespace EpsModule {
+
+  // ----------------------------------------------------------------------
+  // Component construction and destruction
+  // ----------------------------------------------------------------------
+
+  EpsUart ::
+    EpsUart(const char* const compName) :
+      EpsUartComponentBase(compName)
+      ,m_uartRecvBytes(0)
+      ,m_vbattVoltage(0.0)
+      ,m_vbattCurrent(0.0)
+      ,m_cellVoltage(0.0)
+      ,m_cellCurrent(0.0)
+      ,m_battTemp(0.0)
+      ,m_solarPanelVoltage(0.0)
+      ,m_solarPanelCurrent(0.0)
+      ,m_solarPanelTemp(0.0)
+      ,m_voltage5v0(0.0)
+      ,m_current5v0(0.0)
+      ,m_voltage3v3(0.0)
+      ,m_current3v3(0.0)
+      ,m_switchState(0)
+  {
+
+  }
+
+  void EpsUart ::
+    init(
+        NATIVE_INT_TYPE queueDepth,
+        NATIVE_INT_TYPE instance
+    )
+  {
+    EpsUartComponentBase::init(queueDepth, instance);
+  }
+
+  EpsUart ::
+    ~EpsUart()
+  {
+
+  }
+
+  // Step 0: The linux serial driver keeps its storage externally. This means that we need to supply it some buffers to
+  //         work with. This code will loop through our member variables holding the buffers and send them to the linux 
+  //         serial driver. 'preamble' is automatically called after the system is constructed, before the system runs 
+  //         at steady-state. This allows for initialization code that invokes working ports. 
+  void EpsUart ::
+    Preamble()
+  {
+    for (NATIVE_INT_TYPE buffer = 0; buffer < NUM_UART_BUFFERS; buffer++)
+    {
+       // Assign the raw data to the buffer. Make sure to include the size of the region assigned. 
+       this->m_recvBuffers[buffer].setData(this->m_uartBuffers[buffer]);
+       this->m_recvBuffers[buffer].setSize(UART_READ_BUFF_SIZE);
+       // Invoke the port to send the buffer out. 
+       this->UartBuffers_out(0, this->m_recvBuffers[buffer]);
+    }
+    // this->requestTelemetry();
+  }
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for user-defined typed input ports
+  // ----------------------------------------------------------------------
+
+  void EpsUart ::
+    UartRead_handler(
+        FwIndexType portNum,
+        Fw::Buffer& recvBuffer,
+        const Drv::RecvStatus& recvStatus
+    )
+  {
+    // Local variable definitions 
+    int status = 0; 
+    // Grab the size (used amount of the buffer) and a pointer to the data in the buffer 
+    U32 buffsize = static_cast<U32>(recvBuffer.getSize());
+    uint8_t *pointer = reinterpret_cast<uint8_t *>(recvBuffer.getData());
+    // check for invalid read status, log an error, return buffer and abort if there is a problem 
+    if (Drv::RecvStatus::RECV_OK != recvStatus.e) 
+    {
+      // 
+      // We MUST return the buffer or the serial driver won't be able to reuse it. The same buffer send call is used 
+      // as we did in "preamble". Since the buffer's size was overwritten to hold the actual data size, we need to 
+      // reset it to the full data block size before returning it/ 
+      recvBuffer.setSize(UART_READ_BUFF_SIZE);
+      this->UartBuffers_out(0, recvBuffer);
+      return;
+    }
+    else if (Drv::RecvStatus::RECV_OK == recvStatus.e) 
+    {
+      this->m_uartRecvBytes += buffsize;
+      // TESTING -- Log full buffer message to std out in hex 
+      std::stringstream ss; 
+      for (U32 i = 0; i < buffsize; i++) 
+      {
+        ss << std::hex << std::uppercase << std::setfill('0') << std::setw(2) 
+           << static_cast<uint32_t>(pointer[i]);
+        if (i < buffsize - 1) 
+        {
+          ss << " ";
+        }
+      }
+      this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String(ss.str().c_str()));
+      // END TESTING -- 
+      // this->processBuffer();
+    }
+    else 
+    {
+      // if the buffer is of size 4 or greater, 
+      // and the buffer size is equal to the 4th byte + 7,
+      // and the last byte is a newline character,
+      if (buffsize >= 4 && 
+          buffsize == (pointer[3] + 7) &&
+          pointer[buffsize - 1] == '\n'  
+          ) // added check for new line character 
+          // should we check for carriage return as well?
+      {
+        recvBuffer.setSize(UART_READ_BUFF_SIZE);
+        this->UartBuffers_out(0, recvBuffer);
+
+        //this->log_ACTIVITY_HI_EPS_UartMsgIn();
+        ParseUart(pointer, buffsize);
+      } 
+
+      //else 
+        //ResendPacket();
+    }
+  }
+
+  void
+  EpsUart :: 
+    ExternCommandBuffer_handler(
+      NATIVE_INT_TYPE portNum,
+      const EpsModule::EPS_CommandRecv &command
+    )
+  {
+    this->log_ACTIVITY_HI_EPS_DebugEvent(Fw::String("ExternCommandBuffer_handler"));
+    // send the buffer to the eps 
+    // how do we catch the ack packet 
+
+    Fw::Buffer fwBuffer;
+
+    //EPS_Packet packet; 
+    U32 buffer_size = static_cast<U32>(fwBuffer.getSize());
+    uint8_t *buffer = reinterpret_cast<uint8_t *>(fwBuffer.getData());
+
+    //fwBuffer.setSize(UART_READ_BUFF_SIZE);
+    //this->UartWrite_out(0, fwBuffer);
+    //this->serialBufferOut_out(0, fwBuffer);
+
+    uint8_t pkt_len = buffer_size + 5; 
+    uint8_t pkt[pkt_len];
+    uint16_t checksum; 
+    if (buffer_size < 2) { 
+      printf("Invalid buffer size\n");
+      return;
+    }
+
+    pkt[0] = 0xbe; // sync byte high
+    pkt[1] = 0xef; // sync byte low
+    pkt[2] = buffer[0]; // message type 
+    pkt[3] = buffer[1]; // message len
+    for (int i = 0; i < buffer_size - 2; i++)
+    { 
+      pkt[i + 4] = buffer[i + 2];
+    } // copy the buffer into the packet
+    checksum = CalcChecksum(pkt, 2 + buffer_size); 
+    pkt[pkt_len - 2] = checksum >> 8;
+    pkt[pkt_len - 1] = checksum & 0xFF;
+    pkt[pkt_len] = '\n';
+
+    outBuff.set(pkt, pkt_len);
+    this->UartWrite_out(0, outBuff);
+    switch(pkt[2])
+    {
+      case MessageType::NOP: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("NOP"));
+        break;
+      case MessageType::ACK: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("ACK"));
+        break;
+      case MessageType::ERROR: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("ERROR"));
+        break;
+      case MessageType::RESET: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("RESET"));
+        break;
+      case MessageType::GET_DATA: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("GET_DATA"));
+        break;
+      case MessageType::RETURN_DATA: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("RETURN_DATA"));
+        break;
+      case MessageType::SET_VALUE: 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("SET_VALUE"));
+        break;
+      case MessageType::RESEND:
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("RESEND"));
+        break;
+      default:
+        // add some activity here possibly 
+        break; 
+    }
+    this->lastBuff = outBuff;
+  }
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for commands
+  // ----------------------------------------------------------------------
+
+  void EpsUart ::
+    EPS_ReportStatus_cmdHandler(
+        FwOpcodeType opCode,
+        U32 cmdSeq
+    )
+  {
+    // TODO
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  }
+
+  // this method may not be needed
+  void EpsUart ::
+    EPS_SendString_cmdHandler(
+        FwOpcodeType opCode,
+        U32 cmdSeq,
+        const Fw::CmdStringArg& msg
+    )
+  {
+    Fw::Buffer txt;
+    txt.setSize(msg.length());
+    txt.setData(reinterpret_cast<U8*>(const_cast<char*>(msg.toChar())));
+    Drv::SendStatus status = this->UartWrite_out(0, txt);
+    if(Drv::SendStatus::SEND_OK == status.e) {
+      //this->m_uartWriteBytes += msg.length();
+
+      Fw::LogStringArg arg = msg;
+      this->log_ACTIVITY_HI_EPS_UartMsgOut(arg);
+    }
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  }
+
+  void EpsUart ::
+    EPS_ListenToRadio_cmdHandler(
+        FwOpcodeType opCode,
+        U32 cmdSeq,
+        U8 listen
+    )
+  {
+    // TODO
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  }
+
+  // ---
+  // Helper methods 
+  // --- 
+
+  uint16_t EpsUart :: 
+    CalcChecksum(
+      uint8_t *buffer, 
+      uint8_t length
+    )
+  {
+    uint8_t lsb, msb; 
+    uint16_t checksum = 0;
+    for (uint8_t i = 0; i < length - 3; i++)
+    {
+      lsb = checksum; 
+      msb = (checksum >> 8) + buffer[i];
+      lsb += msb;
+      checksum = ((uint16_t)msb << 8) | (uint16_t)lsb;
+    }
+    return checksum;
+  } 
+
+  uint16_t EpsUart :: 
+    CalcChecksum(
+      std::vector<U8> buffer 
+    )
+  {
+    uint8_t lsb, msb; 
+    uint16_t checksum = 0;
+    // todo 
+  }
+
+  /* 
+   * This method will send requested data to the eps mcu 
+   * this will mainly be for syncing the fsm states 
+   */
+  void EpsUart :: 
+    GetData(uint8_t* buffer)
+  {
+    uint8_t type = buffer[0];
+    switch (type)
+    {
+      case SensorData::FSM_STATE:
+        this->RequestState_out(0, true);
+        break;
+      default: // i dont get why we have a switch statement here
+        break;
+    }
+  } 
+
+  void EpsUart :: 
+    LogTelem(
+      uint8_t* data
+    )
+  {
+    uint8_t type = data[0];
+    uint8_t temp = 0; 
+    I64 tempArray[2];
+    uint8_t tempArr[2]; 
+    bool switchArray[3]; 
+    switch(type)
+    {
+      case SensorData::VBATT_VOLTAGE:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_VBattVoltage(temp);
+        break;
+      case SensorData::VBATT_CURRENT:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_VBattCurrent(temp);
+        break;
+      case SensorData::CELL_VOLTAGE:
+        for (uint8_t i = 0; i < 2; i++)
+        {
+          std::memcpy(&tempArr[i], &data[i + 1], sizeof(uint8_t));
+          tempArray[i] = (uint32_t)tempArr[i];
+        }
+        // 
+        this->tlmWrite_EPS_CellVoltage(tempArray);
+        break;
+      case SensorData::CELL_CURRENT:
+        for (uint8_t i = 0; i < 2; i++)
+        {
+          std::memcpy(&tempArr[i], &data[i + 1], sizeof(uint8_t));
+          tempArray[i] = (uint32_t)tempArr[i];
+        }
+        this->tlmWrite_EPS_CellCurrent(tempArray);
+        break;
+      case SensorData::BATTERY_TEMP:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_BattTemp(temp);
+        break;
+      case SensorData::HEATER_STATUS: 
+        std::memcpy(&temp, &data[1], sizeof(bool)); 
+        this->tlmWrite_EPS_HeaterStatus(temp);
+        break;
+      case SensorData::SOLAR_PANEL_VOLTAGE:
+        for (uint8_t i=0; i < 2; i++) 
+        { 
+          std::memcpy(&tempArr[i], &data[i + i*sizeof(uint8_t)], sizeof(uint8_t));
+          tempArray[i] = (uint32_t)tempArr[i];
+        }
+        this->tlmWrite_EPS_SolarPanelVoltage(tempArray);
+        break;
+      case SensorData::SOLAR_PANEL_CURRENT:
+        for (uint8_t i=0; i < 2; i++) 
+        { 
+          std::memcpy(&tempArr[i], &data[i + i*sizeof(uint8_t)], sizeof(uint8_t));
+          tempArray[i] = (uint32_t)tempArr[i];
+        }
+        // this->tlmWrite_EPS_SolarPanelCurrent(tempArray);
+        break;
+      case SensorData::VOLTAGE_5V0: 
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_Voltage5v0(temp);
+        break;
+      case SensorData::CURRENT_5V0:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_Current5v0(temp);
+        break;
+      case SensorData::VOLTAGE_3V3:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_Voltage3v3(temp);
+        break;
+      case SensorData::CURRENT_3V3:
+        std::memcpy(&temp, &data[1], sizeof(uint8_t));
+        this->tlmWrite_EPS_Current3v3(temp);
+        break;
+      case SensorData::SWITCH_STATE:
+        for (uint8_t i = 0; i < 3; i++)
+        {
+          std::memcpy(&switchArray[i], &data[i + 1 * sizeof(bool)], sizeof(bool));
+        }
+        // this->tlmWrite_EPS_SwitchState(switchArray);
+        break;
+      default:
+        // adding check for invalid data type 
+        ResendPacket();
+        break;
+
+    }
+  }
+
+  void EpsUart :: 
+    ResendPacket()
+  {
+    // original packet: {0xBE, 0xEF, RESEND, 0x00, 0x00, 0x00, 0x00, '\n'};
+    // changed packet to this to fix length: {0xBE, 0xEF, RESEND, 0x00, 0x00, 0x00, 0x00, 0x00, '\n', '\r'};
+    U8 ack_pkt[7] = {0xBE, 0xEF, 0x03, 0x00, 0x00, 0x00, '\n'};
+    uint16_t checksum;
+    checksum = CalcChecksum(ack_pkt, 7);
+    ack_pkt[4] = checksum >> 8;
+    ack_pkt[5] = checksum & 0xFF;
+    /* 
+     * printf("Actual resent packet: "); 
+     * for (int i = 0; i < 7; i++)
+     * {
+     *  printf("%02x ", ack_pkt[i]);
+     * }
+     * printf("\n");
+     */
+    outBuff.set(ack_pkt, 7);
+    this->UartWrite_out(0, outBuff);
+    this->lastBuff = outBuff;
+    // printf("resend\n");
+    this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("RESEND"));
+  }
+
+  void EpsUart :: 
+    ParseUart(uint8_t* buffer, U32 size)
+  {
+    if (buffer[0] == 0xBE && buffer[1] == 0xEF)
+    {
+      // check checksum
+      uint16_t checksum = CalcChecksum(buffer, size); 
+      uint16_t checksum2 = (buffer[size - 3] << 8) | buffer[size - 2];
+      // I think we should send the ack packet earlier 
+      if (checksum == checksum2) 
+      {
+        // again packet length here does not match 
+        // original packet: {0xBE, 0xEF, ACK, 0x00, 0x00, 0x00, 0x00, '\n'};
+        // new packet: {0xBE, 0xEF, ACK, 0x00, 0x00, 0x00, 0x00, 0x00, '\n', '\r'};
+        U8 ack_pkt[7] = {0xBE, 0xEF, 0x01, 0x00, 0x00, 0x00, '\n'};
+        uint16_t checksum; 
+        checksum = CalcChecksum(ack_pkt, 7);
+        ack_pkt[4] = checksum >> 8;
+        ack_pkt[5] = checksum & 0xFF;
+        outBuff.set(ack_pkt, 7);
+        this->UartWrite_out(0, outBuff);
+        // if the STM sent an ack packet, and then the OBC sends an ack, 
+        // and if the STM is set up to send an ACK packet again they will be caught in a loop 
+        this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("ACK"));
+        this->lastBuff = outBuff;
+        uint8_t data_type = buffer[4];
+        /* 
+         * NOP
+         * ACK 
+         * ERROR 
+         * RESET 
+         * 
+         * GET_DATA
+         * RETURN_DATA
+         * SET_VALUE
+         * RESEND
+         */
+
+        /*
+         * Packet format 
+         * sync byte high 
+         * sync byte low 
+         * message type 
+         * message length 
+         * message data * 
+         * checksum high 
+         * checksum low
+         */
+        
+        switch(buffer[2])
+        {
+          case MessageType::NOP:
+            this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("NOP"));
+            break;
+          case MessageType::ACK:  
+            this->log_ACTIVITY_HI_EPS_UartMsgOut(Fw::String("ACK"));
+            break;
+          case MessageType::GET_DATA: 
+            this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String("GET_DATA"));
+            // request data from EPS 
+            // This is asking for data for the eps from the pi. This will mainly be the current state of the fsm
+            // getData(packet) 
+            GetData(&buffer[4]);
+            break;
+          case MessageType::SET_VALUE: 
+            this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String("SET_VALUE"));
+            // adding validation to check data is present 
+            if (data_type <= 14 && data_type >= 0) 
+            { 
+              if (
+                data_type == SensorData::VBATT_VOLTAGE ||
+                data_type == SensorData::VBATT_CURRENT ||
+                data_type == SensorData::BATTERY_TEMP || 
+                data_type == SensorData::HEATER_STATUS || 
+                data_type == SensorData::VOLTAGE_5V0 ||
+                data_type == SensorData::CURRENT_5V0 ||
+                data_type == SensorData::VOLTAGE_3V3 ||
+                data_type == SensorData::CURRENT_3V3 )
+              { 
+                // invalid size 
+                if (size != 9) 
+                {
+                  ResendPacket();
+                  return; 
+                }
+              }
+              else if (
+                data_type == SensorData::CELL_VOLTAGE ||
+                data_type == SensorData::CELL_CURRENT ||
+                data_type == SensorData::SOLAR_PANEL_VOLTAGE ||
+                data_type == SensorData::SOLAR_PANEL_CURRENT)
+              {
+                // invalid size 
+                if (size != 10) 
+                { 
+                  ResendPacket();
+                  return; 
+                }
+              }
+              else 
+              {
+                // invalid size 
+                if (size != 11) 
+                { 
+                  ResendPacket();
+                  return; 
+                }
+              }
+            } 
+            else 
+            { 
+              // invalid data type 
+              ResendPacket();
+              return;
+            }
+            // LogTelem(buffer + 4); 
+            LogTelem(&buffer[4]);
+            break;
+          case MessageType::RESEND:
+            this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String("RESEND"));
+            this->UartWrite_out(0, this->lastBuff);
+            break;
+          case MessageType::RESET:
+            this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String("RESET"));
+            // change fsm state to restart 
+            //this->ChangeState_out(0, StateMachineModule::SM_State::RESTART);
+            // will need to log the stages of a shutdown and add a timeout on eps for a hard shutdown 
+            break;
+          default: 
+            this->log_ACTIVITY_HI_EPS_UartMsgIn(Fw::String("ERROR"));
+            // change fsm state to error
+            //this->ChangeState_out(0, StateMachineModule::SM_State::SAFE_ANOM);
+            break;
+        }
+        this->packetBuff.clear(); 
+        packetSize = 0; 
+      } 
+      else 
+      { 
+        // checksum is bad 
+        // printf("Checksum is bad\n");
+        //printf("Bad Checksum: %d\r\n", checksum);
+        //! Maybe even include the calculated checksum in the log message
+        // Change the log message to include the bad checksum
+        this->log_ACTIVITY_HI_EPS_BadChecksum(Fw::String("Bad Checksum"));
+        ResendPacket();
+      }
+    } 
+    else 
+    {
+      // bad packet 
+      // printf("Bad packet\n");
+      // Change the log message to include the bad packet
+      this->log_ACTIVITY_HI_EPS_BadPacket(Fw::String("Bad Packet"));
+      ResendPacket();
+    }
+    this->packetBuff.clear();
+    packetSize = 0;
+  }
+
+
+}

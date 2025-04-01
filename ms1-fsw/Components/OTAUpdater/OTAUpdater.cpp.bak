@@ -1,0 +1,925 @@
+// ======================================================================
+// \title  OTAUpdater.cpp
+// \author g83r
+// \brief  cpp file for OTAUpdater component implementation class
+// ======================================================================
+
+#include "Components/OTAUpdater/OTAUpdater.hpp"
+#include "FpConfig.hpp"
+
+using namespace std;
+
+namespace UpdaterModule {
+
+  // ----------------------------------------------------------------------
+  // Component construction, initialization, and destruction
+  // ----------------------------------------------------------------------
+
+  OTAUpdater::OTAUpdater(const char* const compName) :
+      OTAUpdaterComponentBase(compName) {}
+
+  OTAUpdater::~OTAUpdater() {}
+
+  /** 
+   * \brief OTAUpdater component initialization function
+   * \param queueDepth the depth of the message queue
+   * \param instance the instance number of the component
+   * 
+   * This function initializes the OTAUpdater component.
+   * It checks for the existence of the updater directory located at path ./updater_dir.
+   * If the directory does not exist, it creates the directory.
+   * Then, it checks for the existence of the tracking file located at path ./updater_dir/tracking_file.
+   * If the file does not exist, it creates the file.
+   */
+  void OTAUpdater::init(const NATIVE_INT_TYPE queueDepth, const NATIVE_INT_TYPE instance) {
+    OTAUpdaterComponentBase::init(queueDepth, instance);
+    /* Check for updater dir */ 
+    dir_status = this->ota_dir.open(UPDATER_DIR, Os::Directory::READ);
+    if (dir_status != Os::Directory::OP_OK) {
+      /* do not ingest tracking file */
+      this->tracking_eligible = false;
+      /* log error */
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir open failed."), dir_status);
+      /* create directory named 'updater_dir' */
+      Os::FileSystemInterface::Status dir_create_status; 
+      dir_create_status = Os::FileSystem::createDirectory(UPDATER_DIR);
+      /* check the status of the directory creation operation */
+      if (dir_create_status != Os::FileSystem::OP_OK) {
+        /* log error */
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir creation failed."), dir_status);
+        return;
+      } // if
+      /* else the directory was created */
+      /* log that the directory was created */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory created"));
+      /* create tracking file */
+      creation_status = this->tracking_file.open(TRACKING_FILE, Os::File::OPEN_WRITE);
+      if(creation_status != Os::File::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("tracking file creation failed."), creation_status);
+        return;
+      } // if
+    } // if
+    /* else the directory was opened */
+    /* log that the directory was opened */
+    else this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory opened"));
+    /* check for tracking file */
+    /* try to open file */
+    tracking_status = this->tracking_file.open(TRACKING_FILE, Os::File::OPEN_READ);
+    /* check status of file open operation */
+    if (tracking_status != Os::File::OP_OK) {
+      /* do not ingest tracking file */
+      this->tracking_eligible = false;
+      /* log error */
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("tracking file open failed."), Os::File::DOESNT_EXIST);
+      /* create the file */
+      Os::FileSystem::Status tracking_creation_status = Os::FileSystem::touch(TRACKING_FILE);
+      /* check the status of the file create operation */
+      if (tracking_creation_status != Os::FileSystem::OP_OK) {
+        /* log error */
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("tracking file creation failed."), Os::File::DOESNT_EXIST);
+        return;
+      } // if
+      /* else the file was created */
+      /* log that the file was created */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Tracking file created"));
+    } // if
+    /* else the file was opened */
+    /* log that the file was opened */
+    else this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Tracking file opened"));
+    /* check if the tracking file is eligible for ingestion */
+    if (this->tracking_eligible) {
+      /* ingest the tracking file */
+      this->ingest_tracking_file();
+      /* log that the tracking file was evaluated */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Tracking file evaluated"));
+    } // if
+  } // init 
+
+  void OTAUpdater::preamble() {
+    Fw::ParamValid valid; 
+    // Gets the SCHEDULE parameter
+    const Fw::ParamString schedule_param = this->paramGet_OTA_Schedule(valid);
+    const char* schedule = schedule_param.toChar();
+    FW_ASSERT(
+      valid.e == Fw::ParamValid::VALID || valid.e == Fw::ParamValid::DEFAULT,
+      valid.e
+    );
+    this->sendSchedule_out(
+      0, 
+      Fw::String("OTAUpdater"), 
+      Fw::String(schedule), 
+      SchedulerModule::ScheduleOp::START);
+  } // preamble
+
+  void OTAUpdater::parameterUpdated(FwPrmIdType id) {
+    if (id == 1)
+    { 
+      Fw::ParamValid valid; 
+      // Gets the SCHEDULE parameter 
+      const Fw::ParamString schedule_param = this->paramGet_OTA_Schedule(valid);
+      const char* schedule = schedule_param.toChar();
+      FW_ASSERT(
+        valid.e == Fw::ParamValid::VALID || valid.e == Fw::ParamValid::DEFAULT,
+        valid.e
+      );
+      this->sendSchedule_out(
+        0, 
+        Fw::String("OTAUpdater"), 
+        Fw::String(schedule), 
+        SchedulerModule::ScheduleOp::START);
+      this->log_DIAGNOSTIC_OTA_ScheduleChangedTo(Fw::String(schedule));
+    } // if
+  } // parameterUpdated
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for user-defined typed input ports
+  // ----------------------------------------------------------------------
+
+  void OTAUpdater::readyForPowerOff_handler(FwIndexType portNum, const StateMachineModule::SM_ReadyForPowerOff& result) {
+    // TODO
+  }
+
+  void OTAUpdater::scheduledHandler_handler(FwIndexType portNum, const SchedulerModule::ScheduleStatus& status) {
+    // TODO
+  }
+
+  void OTAUpdater::updaterOpIn_handler(FwIndexType portNum, const UpdaterModule::UpdateOp& op) {
+    // TODO
+  }
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for commands
+  // ----------------------------------------------------------------------
+
+  void OTAUpdater::OTA_PerformAudit_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, const Fw::CmdStringArg& dir_path) {
+    /* [Goal]: Open the target directory workspace ( and place mutex ) */
+    Os::ScopeLock(this->directory_mutex);
+    /*  open the directory */
+    dir_status = this->ota_dir.open(UPDATER_DIR, Os::Directory::READ);
+    /*  check the status of the directory open operation */
+    if (dir_status != Os::Directory::OP_OK) {
+      /* log error */
+      this->log_WARNING_LO_OTA_AuditInterrupted(
+        Fw::String("dir open failed."), dir_status);
+      /* unlock the directory mutex */
+      Os::ScopeLock(this->directory_mutex);
+      return;
+    } // if 
+    /* unlock the directory mutex */
+    Os::ScopeLock(this->directory_mutex); 
+    /* ingest tracking file */
+    this->ingest_tracking_file();
+    /* [Goal]: audit the contents of the directory */
+    if (dir_path.length() > 0) this->evaluate_directory(dir_path.toChar());
+    else this->evaluate_directory(UPDATER_DIR);
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  } // OTA_PerformAudit_cmdHandler
+
+  void OTAUpdater::OTA_PerformFileOperation_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U32 operation, const Fw::CmdStringArg& file_path) {
+    // TODO
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+    this->ingest_tracking_file(); // being used for debug 
+  } // OTA_PerformFileOperation_cmdHandler
+
+  void OTAUpdater::OTA_SelectBootPin_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U32 bootOutNum) {
+    // TODO
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  } // OTA_SelectBootPin_cmdHandler
+
+  void OTAUpdater::OTA_SelectRstState_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U32 rstState) {
+    // TODO
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  } // OTA_SelectRstState_cmdHandler
+
+  // ----------------------------------------------------------------------
+  // Helper methods 
+  // ----------------------------------------------------------------------
+
+  /** 
+   * ingest_tracking_file
+   * 
+   * (1) Open the tracking file located at path ./updater_dir/tracking.txt
+   * (2) Grab the size of the file
+   * (3) Create a buffer to hold the file contents
+   * (4) Read the file contents
+   * (5) Ensure null-termination of the buffer
+   * (6) split the file contents by newline
+   * (7) Iterate over each line and seek for key-value pairs: 
+   *  - n_files, s_fnames, nf_complete, sf_complete
+   * (8) Extract the values of the key-value pairs and log the results
+   * (9) Append the values to the tracking_n_files, tracking_s_fnames, tracking_nf_complete, and tracking_sf_complete
+   * (10) Close the tracking file
+   */
+  void OTAUpdater::ingest_tracking_file() {
+    /* open file */
+    tracking_file_open_status = this->tracking_file.open(TRACKING_FILE, Os::File::OPEN_READ);
+    /* grab the size of the file */
+    tracking_size_status = this->tracking_file.size(this->TRACKING_FILE_SIZE);
+    /* create buffer to hold the file contents */
+    U8 tracking_file_buffer[this->TRACKING_FILE_SIZE + 1];
+    /* read the file contents */
+    tracking_read_status = this->tracking_file.read(tracking_file_buffer, this->TRACKING_FILE_SIZE);
+    /* ensure null-termination */
+    tracking_file_buffer[this->TRACKING_FILE_SIZE] = '\0';
+    /* parse file contents */
+    /* lets split up the content by newline */
+    char* token = strtok(reinterpret_cast<char*>(tracking_file_buffer), "\n");
+    /* iterate over the tokens */
+    while (token != nullptr) { 
+      size_t token_length = std::strlen(token);
+      for (size_t i = 0; i < token_length - 1; ++i) {
+        /* Check for key-value fields */
+        if (std::strncmp(&token[i], "n_files=", 7) == 0) {
+          /* Extract number of files */
+          char* value = token + 8;
+          logMessage = Fw::String("Number of files tracking: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          tracking_n_files = std::atoi(value);
+        } // if
+        if (std::strncmp(&token[i], "s_fnames=", 9) == 0) {
+          /* Extract list of files */
+          char* value = token + 9;
+          logMessage = Fw::String("List of files tracking: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* split the list of files */
+          char* file_name = strtok(value, ",");
+          while (file_name != nullptr) {
+            tracking_s_fnames.push_back(Fw::String(file_name));
+            file_name = strtok(nullptr, ",");
+          } // while
+        } // if
+        if (std::strncmp(&token[i], "nf_complete=", 12) == 0) {
+          /* Extract number of completed files */
+          char* value = token + 12;
+          logMessage = Fw::String("Number of completed files: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          tracking_nf_complete = std::atoi(value);
+        } // if
+        if (std::strncmp(&token[i], "sf_complete=", 12) == 0) {
+          /* Extract number of completed files */
+          char* value = token + 12;
+          logMessage = Fw::String("List of completed files: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* split the list of files */
+          char* file_name = strtok(value, ",");
+          while (file_name != nullptr) {
+            tracking_sf_complete.push_back(Fw::String(file_name));
+            file_name = strtok(nullptr, ",");
+          } // while
+        } // if
+      } // for
+      /* Grab next line */
+      token = strtok(nullptr, "\n");
+    } // while
+    /* close the tracking file */
+    this->tracking_file.close();
+  } // ingest_tracking_file
+
+  /** 
+   * evaluate_directory
+   * @param target_path
+   * 
+   * (1) Check if the target path is NULL. If it is, log an error and return.
+   * (2) Check if the target path is equal to '*' or 'updater_dir'. If it is, log that all files in the directory are being audited.
+   * (3) If the target path is not equal to '*', log that the target directory is being audited.
+   * (4) If the target path is equal to '*', read all directories in the current working path.
+   */
+  void OTAUpdater::evaluate_directory(const char* target_path) {
+    if (target_path == NULL) { 
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("No target path provided."), Os::Directory::DOESNT_EXIST);
+      return;
+    } // if 
+    else if (strcmp(target_path, "*") == 0 || strcmp(target_path, UPDATER_DIR) == 0) { 
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Auditing all files in directory"));
+      /* read all directories in current working path */
+      NATIVE_INT_TYPE max_entries = 512; 
+      FwSizeType fileCount = 0;
+      /* read the directory */
+      dir_status = dir.open(UPDATER_DIR, Os::Directory::READ);
+      /* check the status of the directory open operation */
+      if (dir_status != Os::Directory::OP_OK) {
+        /* log error */
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir open failed."), dir_status);
+        return;
+      }
+      /* read num files in dir */ 
+      FwSizeType num_files = 0;
+      dir_status = dir.getFileCount(num_files);
+      if (dir_status != Os::Directory::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir get file count failed."), dir_status);
+        return;
+      } // if
+      /* create filenamearray of size num_files*/
+      Fw::String path_names[num_files];
+      /* read directory */
+      dir_status = dir.readDirectory(path_names, num_files, fileCount);
+      if (dir_status != Os::Directory::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir read failed."), dir_status);
+        return;
+      }
+      /* log all filenames */
+      for (FwSizeType i = 0; i < fileCount; ++i) {
+        this->log_WARNING_LO_OTA_AuditStatus(path_names[i]);
+        /* append pathnames to updater_dir path */
+        Fw::String path = UPDATER_DIR;
+        path += "/";
+        path += path_names[i];
+        /* try to open pathname as a directory */
+        Os::Directory dir;
+        Os::Directory::Status dir_status = dir.open(path.toChar(), Os::Directory::READ);
+        if (dir_status == Os::Directory::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory opened"));
+          this->audit_directory(path.toChar());
+        } else {
+          this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory open failed"));
+        } // else 
+      } // for
+      /* else the directory was read */
+      /* log that the directory was read */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory read"));
+    } // else if
+    else {
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Auditing target directory"));
+      /* evaluate the target directory */
+      this->audit_directory(target_path);
+    } // else 
+  } // evaluate_directory
+
+  /** 
+   * audit_directory 
+   * @param dir_path
+   * 
+   * (1) Try to open the directory provided by dir_path
+   * (2) Check the status of the directory open operation
+   * (3) If the directory was opened, log that the directory was opened
+   *  If not, log error and return. 
+   * (4) Try to open the index.txt file and log 
+   * (5) Read the file size and log the result of the size read op 
+   * (6) Create a buffer to hold the file contents
+   * (7) Read the file contents and log the result of the read op
+   * (8) Ensure null-termination of the buffer
+   * (9) Pass the buffer to ingest_index_file method 
+   * (10) Close the index file
+   * (11) Read the directory contents and log the result of the read op
+   * (12) Iterate over the files in the directory. On each iteration, 
+   *  check if the file ends in '.seg' or '.concat'. If it does, log the file type
+   *  and add the file to the seg_f_names vector. If the file ends in '.concat', set
+   *  concat_present to true.
+   * (13) If the seg_f_names vector has size greater than 1 and concat_present is true,
+   *  log that the files are being concatenated and call the concatenate_files method with
+   *  the dir_path, seg_f_names, and '1' as the operation type. If the seg_f_names vector has
+   *  size greater than 1 and concat is not present, log that the files are being concatenated 
+   *  and call the concatenate_file method with the dir_path, seg_f_names, and '0' as the 
+   *  operation type.
+   * 
+   * This method changes the previously created objects: 
+   *  - dir_status, 
+   * 
+   * This method creates the following objects: 
+   *  - Os::File index_file 
+   *  - char* file_path 
+   *  - char* dir_path_copy
+   *  - Os::File::Status index_status 
+   *  - FwSignedSizeType index_file_size
+   *  - Os::File::Status size_status
+   *  - U8 index_file_buffer[index_file_size + 1]
+   *  - Os::File::Status read_status
+   *  - NATIVE_INT_TYPE max_entries
+   *  - FwSizeType fileCount
+   *  - Fw::String path_names[max_entries]
+   */
+  void OTAUpdater::audit_directory(const char* dir_path) { 
+    /* try to open the provided directory */
+    dir_status = dir.open(dir_path, Os::Directory::READ);
+    /* check the status of the directory open operation */
+    if (dir_status != Os::Directory::OP_OK) {
+      /* log error */
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir open failed."), dir_status);
+      return;
+    } // if
+    /* else the directory was opened */
+    /* log that the directory was opened */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory opened"));
+    /* try to open the index.txt file */
+    Os::File index_file;
+    /* copy the dir_path */
+    char* file_path = (char*)malloc(strlen(dir_path) + 10);
+    char* dir_path_copy = (char*)malloc(strlen(dir_path) + 1);
+    strcpy(file_path, dir_path);
+    /* append the index file name to the directory path */
+    strcat(file_path, "/index.txt");
+    /* evaluate the index file */
+    Os::File::Status index_status = index_file.open(file_path, Os::File::OPEN_READ);
+    if (index_status != Os::File::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("index file open failed."), index_status);
+      return;
+    } // if
+    /* else the index file was opened */
+    /* log that the index file was opened */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Index file opened"));
+    /* read the file size */ 
+    FwSignedSizeType index_file_size;
+    Os::File::Status size_status = index_file.size(index_file_size);
+    if (size_status != Os::File::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("index file size read failed."), size_status);
+      return;
+    } // if
+    /* else the index file size was read */
+    /* log that the index file size was read */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Index file size read"));
+    /* create buffer to hold the file contents */
+    U8 index_file_buffer[index_file_size + 1];
+    /* read the file contents */
+    Os::File::Status read_status = index_file.read(index_file_buffer, index_file_size);
+    if (read_status != Os::File::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("index file read failed."), read_status);
+      return;
+    } // if
+    /* else the index file was read */
+    /* log that the index file was read */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Index file read"));
+    /* ensure null-termination */
+    index_file_buffer[index_file_size] = '\0';
+    /* ingest the index file */
+    this->ingest_index_file(dir_path, index_file_buffer, index_file_size);
+    /* close the index file */
+    index_file.close();
+    /* read directory contents */
+    NATIVE_INT_TYPE max_entries = 1024; 
+    FwSizeType fileCount = 0;
+    Fw::String path_names[max_entries];
+    /* read the directory */
+    dir_status = dir.readDirectory(path_names, max_entries, fileCount);
+    if (dir_status != Os::Directory::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir read failed."), dir_status);
+      return;
+    } // if
+    /* else the directory was read */
+    /* log that the directory was read */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory read"));
+    /* iterate over the files in the directory */
+    for(FwSignedSizeType i = 0; i < fileCount; i++) { 
+      /* if path_names[i] ends in '.seg' */
+      if (strlen(path_names[i].toChar()) >= 4 && 
+          strcmp(path_names[i].toChar() + strlen(path_names[i].toChar()) - 4, ".seg") == 0) {
+        /* log */ 
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Segment file found"));
+        /* add to vec */ 
+        seg_f_names.push_back(path_names[i]);
+      } // if
+      /* check if .concat file suffix is present */
+      if (strlen(path_names[i].toChar()) >= 7 && 
+          strcmp(path_names[i].toChar() + strlen(path_names[i].toChar()) - 7, ".concat") == 0) {
+        /* log */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Concat file found"));
+        /* set concat_present to true */
+        concat_present = true;
+      } // if
+    } // for
+    /* if vec is greater than 1 and concat is present */
+    if (seg_f_names.size() > 1 && concat_present) {
+      /* log */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Concatenating files"));
+      /* concatenate files : (dir_path, vec<filenames>, opType(1 for append, 0 for create))*/
+      this->concatenate_files(dir_path, seg_f_names, '1'); 
+    } else if (seg_f_names.size() > 1) {
+      /* log */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Concatenating files"));
+      /* concatenate files : (dir_path, vec<filenames>, opType(1 for append, 0 for create))*/
+      this->concatenate_files(dir_path, seg_f_names, '0');
+    } // if
+    /* TODO : Concatenated files are processed and target is built. should now read in file and compare it with 
+     * target file size and evaluate the md5 checksum 
+     */
+    /* clear the seg_f_names vector */
+    seg_f_names.clear();
+    if(this->verify_target(dir_path)) { 
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Target verified"));
+      /* do stuff here .. */
+    } else {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("Target verification failed."), Os::Directory::DOESNT_EXIST);
+    } // else
+    /* close the directory */
+    dir.close();
+  } // audit_directory
+
+  /** 
+   * ingest_index_file 
+   * 
+   * @param dir_path
+   * @param buffer 
+   * @param size 
+   * 
+   * (1) Take u8 (char) buffer of file read in and passed as param 
+   * (2) Split the buffer by newline
+   * (3) Iterate over each line 
+   * (4) For each iteration, check if the line size and if it contains any of the following key-value pairs:
+   *    - seg_size, target_size, md5, target_descriptor
+   * (5) If the line contains any of the key-value pairs, extract the value and append to idx_param_vec
+   * (6) If idx_param_vec has size greater than 0, append dir_path and idx_param_vec to dir_idx_param_vec
+   * (7) Clear idx_param_vec
+   */
+  void OTAUpdater::ingest_index_file(const char* dir_path, U8* buffer, FwSignedSizeType size) {
+    /* split buffer at newline */ 
+    char* token = strtok(reinterpret_cast<char*>(buffer), "\n");
+    /* iterate over the tokens */
+    while(token != nullptr) { 
+      size_t token_length = std::strlen(token);
+      for (size_t i = 0; i < token_length - 1; ++i) {
+        /* check for key-value fields */
+        if (std::strncmp(&token[i], "seg_size", 8) == 0) {
+          /* extract segment size */
+          char* value = token + 9;
+          logMessage = Fw::String("Segment size: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* append to idx_param_vec */
+          idx_param_vec.push_back(std::make_pair(Fw::String("seg_size"), Fw::String(value)));
+        } // if
+        if (std::strncmp(&token[i], "target_size", 11) == 0) {
+          /* extract target size */
+          char* value = token + 12;
+          logMessage = Fw::String("Target size: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* append to idx_param_vec */
+          idx_param_vec.push_back(std::make_pair(Fw::String("target_size"), Fw::String(value)));
+        } // if
+        if (std::strncmp(&token[i], "md5", 3) == 0) {
+          /* extract md5 checksum */
+          char* value = token + 4;
+          logMessage = Fw::String("MD5 checksum: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* append to idx_param_vec */
+          idx_param_vec.push_back(std::make_pair(Fw::String("md5"), Fw::String(value)));
+        } // if
+        if (std::strncmp(&token[i], "target_descriptor", 17) == 0) {
+          /* extract target descriptor */
+          char* value = token + 18;
+          logMessage = Fw::String("Target descriptor: ");
+          logMessage += Fw::String(value);
+          this->log_WARNING_LO_OTA_AuditStatus(logMessage);
+          /* append to idx_param_vec */
+          idx_param_vec.push_back(std::make_pair(Fw::String("target_descriptor"), Fw::String(value)));
+        } // if
+      } // for
+      /* grab next line */
+      token = strtok(nullptr, "\n");
+    } // while
+    /* check if idx_param_vec has size greater than 0 */
+    if (idx_param_vec.size() > 0) {
+      /* append dir_path and idx_param_vec to dir_idx_param_vec */
+      dir_idx_param_vec.push_back(std::make_pair(Fw::String(dir_path), idx_param_vec));
+      /* delete all vals in idx_param_vec */
+      idx_param_vec.clear();
+    } // if
+  } // ingest_index_file
+
+  void OTAUpdater::update_index_file() { 
+
+  } // update_index_file
+
+  /** 
+   * NEEDS TO BE REVISED 
+   */
+  void OTAUpdater::evaluate_checksum(const char* directory_path) {
+    /* read directory for .sha256 file */
+    dir_status = dir.open(directory_path, Os::Directory::READ);
+    if (dir_status != Os::Directory::OP_OK)
+    {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir open failed."), dir_status);
+      return;
+    } // if
+    /* else the directory was opened */
+    /* log that the directory was opened */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory opened"));
+    /* read the directory */
+    NATIVE_INT_TYPE max_entries = 512;
+    FwSizeType fileCount = 0;
+    dir_status = dir.readDirectory(path_names, max_entries, fileCount);
+    if (dir_status != Os::Directory::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("dir read failed."), dir_status);
+      return;
+    } // if
+    /* else the directory was read */
+    /* log that the directory was read */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Directory read"));
+    /* iterate over the files in the directory */
+    for(FwSignedSizeType i = 0; i < max_entries; i++) {
+      /* check for .sha256 file */
+      if (strlen(path_names[i].toChar()) >= 6 && 
+          strcmp(path_names[i].toChar() + strlen(path_names[i].toChar()) - 6, ".sha256") == 0) {
+        /* open the file */
+        Os::File sha256_file;
+        Os::File::Status sha256_status = sha256_file.open(path_names[i].toChar(), Os::File::OPEN_READ);
+        if (sha256_status != Os::File::OP_OK)
+        {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("sha256 file open failed."), sha256_status);
+          return;
+        } // if
+        /* else the sha256 file was opened */
+        /* log that the sha256 file was opened */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("SHA256 file opened"));
+        /* grab file data */
+        long sha256_file_size;
+        Os::File::Status sha256_size_status = sha256_file.size(sha256_file_size);
+        if (sha256_size_status != Os::File::OP_OK)
+        {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("sha256 file size fetch failed."), sha256_size_status);
+          return;
+        } // if
+        /* else the sha256 file was retrieved */
+        /* log that the sha256 file was retrieved */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("SHA256 file size fetched"));
+        /* create buffer to hold the file contents */
+        U8 sha256_buffer[sha256_file_size];
+        /* read file contents into target buffer */
+        Os::File::Status sha256_read_status = sha256_file.read(sha256_buffer, sha256_file_size);
+        if (sha256_read_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("sha256 file read failed."), sha256_read_status);
+          return;
+        } // if
+        /* else the sha256 file was read successfully */
+        /* log that the sha256 file was read */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("SHA256 file read"));
+        /* !!!!!!!!!!!!!!!!!!!!!!!!!  TODO  !!!!!!!!!!!!!!!!!!!!!!!!! */
+        /* close the file */
+        sha256_file.close();
+      } // if
+    } // for
+  } // evaluate_checksum
+
+  /**
+   * concatenate_files
+   * @param dir_path
+   * @param file_names
+   * @param op_type
+   * 
+   * This function concatenates the files in the provided directory.
+   * 
+   * (1) Make sure all filenames provided are in lex (alphabetical) order 
+   * (2) Iterate through the provided and dump into sorted array. 
+   * (3) Split the provided directory path by '/' and find the last directory in the path name
+   * (4) Create a new file of the directory name and append '.concat' as suffix 
+   * (5) Open the file for writing
+   * (6) Iterate over the sorted list of filenames, and on each iteration, open for reading and write to the target 
+   * '.concat' file. Remove each file after it has been read and written. 
+   * (7) Close the file after all files have been concatenated.
+   */
+  bool OTAUpdater::concatenate_files(const char* dir_path, std::vector<Fw::String> file_names, char op_type) {
+    /* order the filenames lexicographically and save to an ordered vector */ 
+    std::vector<std::string> fnames_ord;
+    for (const auto& name : file_names) fnames_ord.push_back(name.toChar());
+    std::sort(fnames_ord.begin(), fnames_ord.end());
+    /* create target file path */
+    std::string dir_path_str(dir_path); 
+    /* tokenize by '/' and grab last entry */ 
+    std::string last_token = dir_path_str.substr(dir_path_str.find_last_of("/") + 1);
+    /* append last token with .concat and append path to dir_path */
+    last_token += ".concat";
+    dir_path_str += "/";
+    dir_path_str += last_token;
+    /* log */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String(dir_path_str.c_str()));
+    /* check opType */
+    if (op_type == '0') { 
+      /* log */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Creating new file"));
+      /* create the file */
+      Os::FileSystem::Status file_create_status = Os::FileSystem::touch(dir_path_str.c_str());
+      if (file_create_status != Os::FileSystem::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("file creation failed."), file_create_status);
+        return false;
+      } // if
+      /* else the file was created */
+      /* log that the file was created */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("File created"));
+      /* open the file */
+      Os::File concat_file;
+      Os::File::Status concat_open_status = concat_file.open(dir_path_str.c_str(), Os::File::OPEN_WRITE);
+      if (concat_open_status != Os::File::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("file open failed."), concat_open_status);
+        return false;
+      } // if
+      /* else the file was opened */
+      /* log that the file was opened */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("File opened"));
+      /* iterate over the filenames */
+      for(size_t i = 0; i < fnames_ord.size(); i++) { 
+        /* log */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String(fnames_ord[i].c_str()));  
+        /* correct seg file path */
+        std::string seg_file_path = dir_path;
+        seg_file_path += "/";
+        seg_file_path += fnames_ord[i];
+        /* open the seg file */
+        Os::File seg_file;
+        Os::File::Status seg_open_status = seg_file.open(seg_file_path.c_str(), Os::File::OPEN_READ);
+        if (seg_open_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file open failed."), seg_open_status);
+          return false;
+        } // if
+        /* else the seg file was opened */
+        /* log that the seg file was opened */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file opened"));
+        /* grab seg file size */
+        long seg_file_size;
+        Os::File::Status seg_size_status = seg_file.size(seg_file_size); 
+        if (seg_size_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file size fetch failed."), seg_size_status);
+          return false;
+        } // if
+        /* else the seg file size was fetched */
+        /* log that the seg file size was fetched */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file size fetched"));
+        /* create buffer to hold the file contents */
+        U8 seg_file_buffer[seg_file_size];
+        /* read the file contents */
+        Os::File::Status seg_read_status = seg_file.read(seg_file_buffer, seg_file_size);
+        if (seg_read_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file read failed."), seg_read_status);
+          return false;
+        } // if
+        /* else the seg file was read */
+        /* log that the seg file was read */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file read"));
+        /* write the seg file contents to the concat file */
+        Os::File::Status write_status = concat_file.write(seg_file_buffer, seg_file_size);
+        if (write_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file write failed."), write_status);
+          return false;
+        } // if
+        /* else the seg file was written */
+        /* log that the seg file was written */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file written"));
+        /* close the seg file */
+        seg_file.close();
+        /* delete file after concat write */
+        Os::FileSystem::removeFile(seg_file_path.c_str());
+      } // for
+      /* close the concat file */
+      concat_file.close();
+    } else if (op_type == '1') {  
+      /* log */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Appending to existing file"));
+      /* open the file */
+      Os::File concat_file;
+      Os::File::Status concat_open_status = concat_file.open(dir_path_str.c_str(), Os::File::OPEN_APPEND);
+      if (concat_open_status != Os::File::OP_OK) {
+        this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("file open failed."), concat_open_status);
+        return false;
+      } // if
+      /* else the file was opened */
+      /* log that the file was opened */
+      this->log_WARNING_LO_OTA_AuditStatus(Fw::String("File opened"));
+      /* iterate over the filenames */
+      for(size_t i = 0; i < fnames_ord.size(); i++) { 
+        /* log */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String(fnames_ord[i].c_str()));  
+        /* correct seg file path */
+        std::string seg_file_path = dir_path;
+        seg_file_path += "/";
+        seg_file_path += fnames_ord[i];
+        /* open the seg file */
+        Os::File seg_file;
+        Os::File::Status seg_open_status = seg_file.open(seg_file_path.c_str(), Os::File::OPEN_READ);
+        if (seg_open_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file open failed."), seg_open_status);
+          return false;
+        } // if
+        /* else the seg file was opened */
+        /* log that the seg file was opened */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file opened"));
+        /* grab seg file size */
+        long seg_file_size;
+        Os::File::Status seg_size_status = seg_file.size(seg_file_size); 
+        if (seg_size_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file size fetch failed."), seg_size_status);
+          return false;
+        } // if
+        /* else the seg file size was fetched */
+        /* log that the seg file size was fetched */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file size fetched"));
+        /* create buffer to hold the file contents */
+        U8 seg_file_buffer[seg_file_size];
+        /* read the file contents */
+        Os::File::Status seg_read_status = seg_file.read(seg_file_buffer, seg_file_size);
+        if (seg_read_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file read failed."), seg_read_status);
+          return false;
+        } // if
+        /* else the seg file was read */
+        /* log that the seg file was read */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file read"));
+        /* write the seg file contents to the concat file */
+        Os::File::Status write_status = concat_file.write(seg_file_buffer, seg_file_size);
+        if (write_status != Os::File::OP_OK) {
+          this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("seg file write failed."), write_status);
+          return false;
+        } // if
+        /* else the seg file was written */
+        /* log that the seg file was written */
+        this->log_WARNING_LO_OTA_AuditStatus(Fw::String("Seg file written"));
+        /* close the seg file */
+        seg_file.close();
+        /* delete file after concat write */
+        Os::FileSystem::removeFile(seg_file_path.c_str());
+      } // for
+      /* close the concat file */
+      concat_file.close();
+    } // if
+    return true; 
+  } // concatenate_files
+
+  void OTAUpdater::compute_md5_checksum(const char* file_path) {
+    // TODO
+  } // compute_md5_checksum
+
+  bool OTAUpdater::verify_target(const char* dir_path) { 
+    /* take end of dir_path */
+    std::string dir_path_str(dir_path);
+    std::string last_token = dir_path_str.substr(dir_path_str.find_last_of("/") + 1);
+    /* append last token with .concat and append path to dir_path */
+    std::string target_filename = last_token;
+    last_token += ".concat";
+    dir_path_str += "/";
+    dir_path_str += last_token;
+    /* log */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String(dir_path_str.c_str()));
+    /* open the file */
+    Os::File concat_file;
+    Os::File::Status concat_open_status = concat_file.open(dir_path_str.c_str(), Os::File::OPEN_READ);
+    if (concat_open_status != Os::File::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("file open failed."), concat_open_status);
+      return false;
+    } // if
+    /* else the file was opened */
+    /* log that the file was opened */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("File opened"));
+    /* grab file data */
+    long concat_file_size;
+    Os::File::Status concat_size_status = concat_file.size(concat_file_size);
+    if (concat_size_status != Os::File::OP_OK) {
+      this->log_WARNING_LO_OTA_AuditInterrupted(Fw::String("file size fetch failed."), concat_size_status);
+      return false;
+    } // if
+    /* else the file size was retrieved */
+    /* log that the file size was retrieved */
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String("File size fetched"));
+    /** DEBUG **/
+    long target_size = 0; 
+    std::string cmp_path_str = UPDATER_DIR; 
+    cmp_path_str += "/";
+    cmp_path_str += target_filename;
+    /* iterate through the vector contents to see how the data is being stored. */
+    /* data should be stored in the format of: <, <<>, <>>>*/
+    for (size_t i = 0; i < dir_idx_param_vec.size(); i++) {                          
+      for (size_t j = 0; j < dir_idx_param_vec[i].second.size(); j++) {   
+        /* 
+          if path from vec matches target path and 
+          param matches 'target_size'
+          and val is same as the observed file size 
+          */
+        if (strcmp(cmp_path_str.c_str(), dir_idx_param_vec[i].first.toChar()) == 0 && 
+            strcmp(dir_idx_param_vec[i].second[j].first.toChar(), "target_size") == 0 && 
+            concat_file_size == std::stol(dir_idx_param_vec[i].second[j].second.toChar())) {
+          this->log_WARNING_LO_OTA_AuditStatus(Fw::String("PATH.size MATCHES TARGET.size"));
+          /* NOTE: Here is where a trigger should be had to ingest the file contents
+             and compare the provided checksum with the computed checksum */
+          /* TODO .. for now, return true */
+          return true;
+        } // if    
+      } // for
+    } // for
+  } // verify_target
+
+  unsigned char* OTAUpdater::generate_md5_from_buffer(U8* buffer, size_t size) {
+    /* create a hash object */
+    unsigned char result[MD5_DIGEST_LENGTH];  
+    /* compute the hash */
+    MD5(buffer, size, result);
+    /* delete the buffer */
+    delete[] buffer;
+    /* log the hash */
+    ostringstream sout; 
+    sout << hex << setfill('0');
+    for (int i = 0; i < MD5_DIGEST_LENGTH; i++)
+    {
+      sout << setw(2) << static_cast<unsigned>(result[i]);
+    } // for
+    this->log_WARNING_LO_OTA_AuditStatus(Fw::String(sout.str().c_str()));
+    unsigned char* output; 
+    memcpy(output, result, MD5_DIGEST_LENGTH);
+    return output;
+  } // generate_md5_from_buffer
+
+  void OTAUpdater::generate_file_from_object(const char* file_path, const char* object_path, const char* target_file_type) {
+    // TODO
+  } // generate_file_from_object
+
+} // namespace UpdaterModule

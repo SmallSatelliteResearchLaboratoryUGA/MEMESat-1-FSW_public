@@ -1,0 +1,5 @@
+<<<<<<< HEAD
+/usr/bin/c++  -Wall -Wextra -Wpedantic CMakeFiles/cron_test.dir/CronDataTest.cpp.o CMakeFiles/cron_test.dir/CronRandomizationTest.cpp.o CMakeFiles/cron_test.dir/CronScheduleTest.cpp.o CMakeFiles/cron_test.dir/CronTest.cpp.o -o /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc/ms1/libs/libcron/test/out/cron_test  /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc/ms1/libs/libcron/libcron/out/liblibcron.a -lpthread 
+=======
+/usr/bin/c++  -Wall -Wextra -Wpedantic CMakeFiles/cron_test.dir/CronDataTest.cpp.o CMakeFiles/cron_test.dir/CronRandomizationTest.cpp.o CMakeFiles/cron_test.dir/CronScheduleTest.cpp.o CMakeFiles/cron_test.dir/CronTest.cpp.o -o /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc-v3.5.0/ms1/libs/libcron_v1.3.1/test/out/cron_test  /home/g83r/Desktop/uga/sat-lab/MEMESat-FSW/obc-v3.5.0/ms1/libs/libcron_v1.3.1/libcron/out/liblibcron.a -lpthread 
+>>>>>>> main

@@ -2,3 +2,12 @@
 	path = ms1-fsw/fprime
 	url = https://github.com/nasa/fprime.git
 	branch = tags/v3.5.1
+[submodule "ms1-fsw/libs/openssl-cmake"]
+	path = ms1-fsw/libs/openssl-cmake
+	url = git@github.com:viaduck/openssl-cmake.git
+[submodule "ms1-fsw/libs/json"]
+	path = ms1-fsw/libs/json
+	url = https://github.com/nlohmann/json.git
+[submodule "ms1-fsw/libs/stm32flash"]
+	path = ms1-fsw/libs/stm32flash
+	url = https://github.com/ARMinARM/stm32flash.git

@@ -1,0 +1,152 @@
+// ======================================================================
+// \title  StateMachine.hpp
+// \author g83r
+// \brief  hpp file for StateMachine component implementation class
+// ======================================================================
+
+#ifndef StateMachineModule_StateMachine_HPP
+#define StateMachineModule_StateMachine_HPP
+
+#include <thread> 
+#include <iostream> 
+#include <atomic> 
+#include <string> 
+#include <map>
+
+#include "Components/StateMachine/StateMachineComponentAc.hpp"
+
+namespace StateMachineModule {
+
+  class StateMachine :
+    public StateMachineComponentBase
+  {
+
+    public:
+
+      // ----------------------------------------------------------------------
+      // Component construction and destruction
+      // ----------------------------------------------------------------------
+
+      //! Construct StateMachine object
+      StateMachine(
+          const char* const compName //!< The component name
+      );
+
+      //! Initialize object StateMachine 
+      void init( 
+        const NATIVE_INT_TYPE queueDepth, /*!< The queue depth */
+        const NATIVE_INT_TYPE instance = 0  /*!< The instance number */
+      );
+
+      //! Destroy StateMachine object
+      ~StateMachine();
+
+      void setState(SM_State state); 
+
+      SM_State getState() const; 
+
+      void setError(int);
+
+      int getError();
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for user-defined typed input ports
+      // ----------------------------------------------------------------------
+
+      //! Handler implementation for ChangeState
+      //!
+      //! Port for manually changing the state of the StateMachine
+      void SM_ChangeState_handler(
+          const FwIndexType portNum, //!< The port number
+          const StateMachineModule::SM_State& state
+      ) override;
+
+      //! Handler implementation for Run
+      //!
+      //! Port receiving calls from the rate group
+      void Run_handler(
+          const FwIndexType portNum, //!< The port number
+          U32 context //!< The call order
+      ) override;
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for commands
+      // ----------------------------------------------------------------------
+
+      //! Handler implementation for command SM_ChangeState
+      //!
+      //! Command to change state of the StateMachine
+      //! read: https://github.com/nasa/fprime/releases/tag/v3.5.0
+      //! section: FPP Changes
+      void SM_ChangeState_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          StateMachineModule::SM_State state
+      ) override;
+
+      //! Implementation for SET_CRUISE_MODE command handler 
+      //! Command from Ground Station to change cruise mode 
+      void SM_SetCruiseMode_cmdHandler(
+        const FwOpcodeType opCode,
+        const U32 cmdSeq,
+        SM_CruiseMode cruiseMode
+      ) override; 
+
+    PRIVATE: 
+
+      // --- 
+      // StateMachine Variables 
+      // ---
+
+      StateMachineModule::SM_State currentState = SM_State::START_UP;
+      StateMachineModule::SM_State nextState;
+      StateMachineModule::SM_CruiseMode cruiseMode = SM_CruiseMode::NOMINAL;
+      std::map<std::string, double> persistentData;
+      std::map<std::string, double>::iterator it;
+      const U32 MEME_BAUD = 40000;
+      const U32 BBS_BAUD = 9600; 
+      bool command = false;
+      int error = -1;
+
+    PRIVATE: 
+    
+      // ---
+      // StateMachine Helper Methods
+      // ---
+
+      //! Check if the state transition is valid
+      void CheckState(SM_State);
+
+      //! Send the current state to the MCU
+      void SendState(StateMachineModule::SM_State state); 
+
+      //! Update to cruise mode
+      void UpdateCruise(); 
+
+      //! Update to safe mode
+      void UpdateAnom();
+
+      //! Update to critical safe 
+      void UpdateCritPower(); 
+
+      //! Updates the state of the state machine 
+      void Update();
+
+      //! Gets the system ready for power off 
+      void ReadyForPowerOff();
+
+      //! Restarts the system
+      void Restart();
+
+      //! Shuts down the system
+      void Shutdown();
+
+  };
+
+}
+
+#endif

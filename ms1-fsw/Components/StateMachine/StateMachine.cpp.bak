@@ -1,0 +1,381 @@
+// ======================================================================
+// \title  StateMachine.cpp
+// \author g83r
+// \brief  cpp file for StateMachine component implementation class
+// ======================================================================
+
+#include "Components/StateMachine/StateMachine.hpp"
+#include "FpConfig.hpp"
+#include "Fw/Types/BasicTypes.hpp"
+#include "Fw/Types/Assert.hpp"
+#include "Fw/Buffer/Buffer.hpp"
+#include <iostream> 
+#include <fstream> 
+#include <unistd.h>
+#include <sys/reboot.h> 
+#include "Os/File.hpp"
+
+namespace StateMachineModule {
+
+  // ----------------------------------------------------------------------
+  // Component construction and destruction
+  // ----------------------------------------------------------------------
+
+  //! StateMachine constructor
+  //!
+  //! \param compName The component name
+  //!
+  //! (i) On object construction,
+  //! (1) Set the next state of the state machine to SAFE_ANOM
+  //! (2) Attempt to read persistent data from the file system
+  //! (2.a)  Create a file object
+  //! (2.b)  Create a status object
+  //! (2.c)  Check if the file named 'persistent_data.txt' can be opened for reading
+  //! (2.c.i)  Case: File opened successfully
+  //! (2.c.i)  Result: Create a buffer of size 256
+  //! (2.c.i)          Check if the file can be read
+  //! (2.c.ii)   Case: File read successfully
+  //! (2.c.ii)   Result: Read the file content into the buffer
+  //! (2.c.ii)           Parse the buffer
+  //! (2.c.ii)   Case: File not read successfully
+  //! (2.c.ii)   Result: Log a warning message
+  //! (2.c.i)  Case: File not opened successfully
+  //! (2.c.i)  Result: Log a warning message
+  StateMachine ::
+    StateMachine(const char* const compName) :
+      StateMachineComponentBase(compName)
+  {
+    this->nextState = SM_State::SAFE_ANOM; // (1) 
+                                        // (2) 
+    Os::File file;                      // (2.a)
+    Os::File::Status status;            // (2.b)
+    if ((status = file.open("persistent_data.txt", Os::File::OPEN_READ)) == Os::File::Status::OP_OK) { // (2.c)
+      FwSignedSizeType size = 256;    
+      U8* buffer = new U8[size];        
+      if ((status = file.read(buffer, size)) == Os::File::Status::OP_OK) { // (2.c.i)
+        std::string line, param;        
+        double value;                   
+        for (int i = 0; i < size; i++) {
+          if (buffer[i] == '\n') {
+            param = line.substr(0, line.find(':')); 
+            value = std::stod(line.substr(line.find(':') + 1)); 
+            persistentData[param] = value; 
+            line = "";                
+          } else 
+            line += buffer[i];              
+        }
+        file.close();                       
+      } else 
+        this->log_WARNING_LO_SM_Persistent_Data_Error(); // (2.c.ii)
+    } else 
+      this->log_WARNING_LO_SM_Persistent_Data_Error(); // (2.c.i)
+  }
+
+  //! Initialize object StateMachine 
+  //!
+  void StateMachine :: 
+    init(
+      const NATIVE_INT_TYPE queueDepth, 
+      const NATIVE_INT_TYPE instance
+    )
+  {
+    StateMachineComponentBase::init(queueDepth, instance);
+  }
+
+
+  StateMachine ::
+    ~StateMachine()
+  {
+
+  }
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for user-defined typed input ports
+  // ----------------------------------------------------------------------
+
+  //! ChangeState handler
+  //!
+  //! \param portNum The port number
+  //! \param state The state of the component
+  //!
+  //! (i) On receiving a ChangeState event,
+  //! (1) Check if state is not cruise mode
+  //! (1.i) Case: State is not cruise mode
+  //! (1.i) Result: Change the next state of the state machine to the received state
+  //! (1.i) Case: State is cruise mode 
+  //! (1.i) Result: Log a warning message
+  void StateMachine ::
+    SM_ChangeState_handler(
+        FwIndexType portNum,
+        const StateMachineModule::SM_State& state
+    )
+  {
+    if (state != SM_State::CRUISE) { // (1)
+      this->nextState = state;  // (1.i)
+      this->log_ACTIVITY_HI_SM_State_Change(state); // (1.i)
+    } else 
+      this->log_WARNING_HI_SM_Invalid_State_Change(state); // (1.i)
+  }
+
+  //! Run handler
+  //!
+  //! \param portNum The port number
+  //! \param context The call order
+  //!
+  //! (i) On receiving a Run event,
+  //! (1) Update the state of the state machine
+  //! (2) Send the current state to the MCU
+  void StateMachine ::
+    Run_handler(
+        FwIndexType portNum,
+        U32 context
+    )
+  {
+    this->Update(); // (1)
+    this->SendState(this->currentState); // (2)
+  }
+
+  // ----------------------------------------------------------------------
+  // Handler implementations for commands
+  // ----------------------------------------------------------------------
+
+  //! SM Change State command handler
+  //!
+  //! \param opCode The opcode
+  //! \param cmdSeq The command sequence number
+  //! \param state The state to change to
+  //!
+  //! (i) On receiving a SM Change State command,
+  //! (1) Set the next state of the state machine to the received state
+  //! (2) Log an activity high message for the state change
+  //! (3) Send a command response with opcode, command sequence number, and OK status
+  void StateMachine ::
+    SM_ChangeState_cmdHandler(
+        FwOpcodeType opCode,
+        U32 cmdSeq,
+        StateMachineModule::SM_State state
+    )
+  {
+    this->nextState = state; // (1)
+    this->log_ACTIVITY_HI_SM_State_Change(state); // (2)
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK); // (3)  
+  }
+
+  //! SM Set Cruise Mode command handler
+  //!
+  void StateMachine :: 
+    SM_SetCruiseMode_cmdHandler(
+      const FwOpcodeType opCode,
+      const U32 cmdSeq,
+      SM_CruiseMode cruiseMode
+    )
+  {
+    this->cruiseMode = cruiseMode;
+    this->log_ACTIVITY_HI_SM_Cruise_Mode_Change(this->cruiseMode);
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+  }
+
+  // ----------------------------------------------------------------------
+  // Helper methods
+  // ----------------------------------------------------------------------
+
+  //! CheckState method
+  //!
+  //! \param state The next state of the state machine
+  //!
+  void StateMachine :: 
+    CheckState(
+      StateMachineModule::SM_State state
+    )
+  {
+    if (
+      (this->currentState == SM_State::SAFE_CRIT_PWR) && 
+      (state == SM_State::CRUISE)
+        )
+      this->log_WARNING_HI_SM_Invalid_State_Change(state);
+    else if (
+      (this->currentState.e != state.e) && 
+      (state.e != SM_State::START_UP)
+              ) 
+    {
+      this->currentState = this->nextState;
+      this->tlmWrite_SM_State(this->currentState);
+    }
+  }
+
+  //! SendState method
+  //!
+  //! \param state The state of the state machine
+  //!
+  void StateMachine :: 
+    SendState(
+      StateMachineModule::SM_State state
+    )
+  {
+    U8 msg[4] = {0x04, 0x0E, 0x01, 0x00}; // type, length, ack, state
+
+    // set 4th byte to current state 
+    switch (state.e) 
+    {
+      case SM_State::CRUISE: 
+        msg[3] = 0x02;
+        break;
+      case SM_State::SAFE_ANOM: 
+        msg[3] = 0x01;
+        break;
+      case SM_State::SAFE_CRIT_PWR:
+        msg[3] = 0x05;
+        break;
+      case SM_State::START_UP:
+        msg[3] = 0x00;
+        break;
+      case SM_State::RESTART:
+        msg[3] = 0x05;
+        break;
+      case SM_State::SHUTDOWN:
+        msg[3] = 0x05;
+        break;
+      default:
+        msg[3] = 0x01;
+        break;
+    }
+
+    Fw::Buffer buffer(msg, 4);
+    //this->SM_EpsCommand_out(0, buffer);
+  }
+
+  //! UpdateCruise method
+  //!
+  void StateMachine :: 
+    UpdateCruise()
+  {
+    // need to allow people other than us to uplink 
+    // this will have to be done in the radio component 
+    // make sure the radio baud is 9600
+    this->tlmWrite_SM_CruiseMode(this->cruiseMode);  
+
+    //if (this->cruiseMode == SM_CruiseMode::MEME) 
+      // this->SM_RadioCommand_out(0, this->currentState, MEME_BAUD);
+    //else if (this->cruiseMode == SM_CruiseMode::BBS)
+      // this->SM_RadioCommand_out(0, this->currentState, BBS_BAUD);
+  }
+
+  //! UpdateAnom method
+  //!
+  void StateMachine :: 
+    UpdateAnom()
+  {
+    // restrict communication to ssrl ground station - not sure how to do this 
+    // no more bbs comm until move back to cruise mode - same as above 
+    // baud rate is set to 9600 why are we changing the baud again instead of keeping it high 
+    //this->SM_RadioCommand_out(0, this->currentState, 9600);
+  }
+  
+  //! UpdateCritPower method
+  //!
+  void StateMachine :: 
+    UpdateCritPower() 
+  {
+    this->Shutdown();
+  }
+
+  void StateMachine :: 
+    ReadyForPowerOff()
+  {
+    // saves persistent data to the system 
+    Os::File file; 
+    Os::File::Status status; 
+
+    if ((status = file.open("persistent_data.txt", Os::File::OPEN_WRITE)) == Os::File::Status::OP_OK) 
+    {
+      for (auto const& x : this->persistentData) 
+      {
+        std::string line = x.first + ":" + std::to_string(x.second) + "\n";
+        FwSignedSizeType size = line.length();
+
+        if ((status = file.write((U8*)line.c_str(), size, Os::File::WaitType::WAIT)) != Os::File::Status::OP_OK) 
+          this->log_WARNING_LO_SM_Persistent_Data_Error();
+      }
+      file.close();
+    } 
+    else 
+      this->log_WARNING_LO_SM_Persistent_Data_Error();
+
+    // send shutdown command to file recycler 
+    this->SM_ReadyForPowerOff_out(0, true);
+
+    // send shutdown command to eps 
+    U8 msg[4] = {
+      0x04, // message type - set value 
+      0x0E, // message length - 14? 
+      0x01, // ack received 
+      0x05 // state to switch the mcu to - STATE_STM_CTL
+    };
+
+    Fw::Buffer shutdownMsg(msg, 4); 
+    //this->SM_EpsCommand_out(0, shutdownMsg);
+  }
+
+  //! Restart method
+  //!
+  void StateMachine ::
+    Restart() 
+  { 
+    this->persistentData["restarts"]++;
+    this->ReadyForPowerOff();
+    this->tlmWrite_SM_RestartCount(this->persistentData["restarts"]);
+    this->log_ACTIVITY_HI_SM_Restart();
+    sync();
+    reboot(RB_AUTOBOOT);
+  }
+
+  //! Shutdown method
+  //!
+  void StateMachine ::
+    Shutdown() 
+  {
+    this->persistentData["shutdowns"]++;
+    this->ReadyForPowerOff();
+    this->tlmWrite_SM_ShutdownCount(this->persistentData["shutdowns"]);
+    this->log_ACTIVITY_HI_SM_Shutdown();
+    sync();
+    reboot(RB_POWER_OFF);
+  }
+
+  //! Update method 
+  //!
+  void StateMachine :: 
+    Update() 
+  {
+    this->CheckState(this->nextState);
+    switch (this->currentState.e)
+    {
+      case SM_State::CRUISE:
+        this->UpdateCruise();
+        break;
+      case SM_State::SAFE_ANOM:
+        this->UpdateAnom();
+        break;
+      case SM_State::SAFE_CRIT_PWR:
+        this->UpdateCritPower();
+        break;
+      case SM_State::START_UP:
+        this->nextState = SM_State::SAFE_ANOM;
+        break;
+      case SM_State::RESTART:
+        this->Restart();
+        break;
+      case SM_State::SHUTDOWN:
+        this->Shutdown();
+        break;
+      default:
+        this->nextState = SM_State::SAFE_ANOM;
+        this->UpdateAnom();
+        break;
+    }
+
+  }
+
+
+
+}

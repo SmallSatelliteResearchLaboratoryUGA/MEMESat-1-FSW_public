@@ -1,0 +1,8 @@
+source "Kconfig.zephyr" 
+
+
+config UART_ASYNC_API
+    bool "Enable new asynchronous UART API [EXPERIMENTAL]"
+    depends on SERIAL_SUPPORT_ASYNC && SERIAL
+    help
+      This option enables new asynchronous UART API.

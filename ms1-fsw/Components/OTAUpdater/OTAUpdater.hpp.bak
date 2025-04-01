@@ -1,0 +1,271 @@
+// ======================================================================
+// \title  OTAUpdater.hpp
+// \author g83r
+// \brief  hpp file for OTAUpdater component implementation class
+// ======================================================================
+
+#ifndef UpdaterModule_OTAUpdater_HPP
+#define UpdaterModule_OTAUpdater_HPP
+
+#include "Components/OTAUpdater/OTAUpdaterComponentAc.hpp"
+#include "Fw/Types/BasicTypes.hpp"
+#include "Fw/Types/String.hpp"
+#include "FpConfig.hpp"
+#include "Os/Directory.hpp"
+#include "Os/File.hpp"
+#include "Os/FileSystem.hpp"
+#include "Os/Mutex.hpp"
+#include <algorithm>
+#include <fstream>
+#include <iomanip> 
+#include <iostream> 
+#include <sstream> 
+#include <string>
+#include <vector>
+#include <ctype.h>
+#include <openssl/md5.h> // Ref : https://www.geeksforgeeks.org/get-the-md5-hash-of-a-file-in-cpp/
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+namespace UpdaterModule {
+
+  class OTAUpdater :
+    public OTAUpdaterComponentBase
+  {
+
+    //! These filepaths should be stored in config/OTAUComponentImplCfg.hpp
+    const char* UPDATER_DIR = "./updater_dir"; 
+    const char* TRACKING_FILE = "./updater_dir/tracking.txt";
+    const char* BIN_DIR = "./updater_dir/bin";
+    FwSignedSizeType TRACKING_FILE_SIZE; 
+
+    public:
+
+      // ----------------------------------------------------------------------
+      // Component construction and destruction
+      // ----------------------------------------------------------------------
+
+      //! Construct OTAUpdater object
+      OTAUpdater(
+          const char* const compName //!< The component name
+      );
+
+      //! Destroy OTAUpdater object
+      ~OTAUpdater();
+
+      //! Initialize OTAUpdater object
+      void init(
+          const NATIVE_INT_TYPE queueDepth, //!< The queue depth
+          const NATIVE_INT_TYPE instance = 0 //!< The instance number
+      );
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for user-defined typed input ports
+      // ----------------------------------------------------------------------
+
+      void preamble() override;
+
+      void parameterUpdated(
+          FwPrmIdType id //!< The parameter ID
+      ) override;
+
+      //! Handler implementation for readyForPowerOff 
+      //! 
+      //! Port for receiving the power off status
+      void 
+      readyForPowerOff_handler(
+        FwIndexType portNum, //!< The port number
+        const StateMachineModule::SM_ReadyForPowerOff& result //!< The result of the power off request
+      ) override;
+
+      //! Handler implementation for scheduledHandler
+      //!
+      //! Port for handling the schedule
+      void scheduledHandler_handler(
+          FwIndexType portNum, //!< The port number
+          const SchedulerModule::ScheduleStatus& status
+      ) override;
+
+      //! Handler implementation for updaterOpIn
+      //!
+      //! Port receiving the operation request
+      void updaterOpIn_handler(
+          FwIndexType portNum, //!< The port number
+          const UpdaterModule::UpdateOp& op
+      ) override;
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for commands
+      // ----------------------------------------------------------------------
+
+      //! Handler implementation for command OTA_PerformAudit
+      //!
+      //! Which boot pin to use
+      //! Which state the reset pin should be in
+      //! The time to wait for the STM to boot
+      //! The time to wait for the STM to reset
+      //! Command to run an audit of the current files in scope
+      void OTA_PerformAudit_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          const Fw::CmdStringArg& dir_path
+      ) override;
+
+      //! Handler implementation for command OTA_PerformFileOperation
+      //!
+      //! Command to perform a file operation on a group of files in scope
+      void OTA_PerformFileOperation_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          U32 operation,
+          const Fw::CmdStringArg& file_path
+      ) override;
+
+      //! Handler implementation for command OTA_SelectBootPin
+      //!
+      //! Command to select the boot pin
+      void OTA_SelectBootPin_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          U32 bootOutNum
+      ) override;
+
+      //! Handler implementation for command OTA_SelectRstState
+      //!
+      //! Command to select the reset pin state
+      void OTA_SelectRstState_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          U32 rstState
+      ) override;
+
+    PRIVATE: 
+    
+      // ----------------------------------------------------------------------
+      // Helper functions
+      // ----------------------------------------------------------------------
+
+      //! Helper function to ingest the tracking file
+      void ingest_tracking_file();
+
+      //! Helper function to audit the directory
+      void evaluate_directory(const char* dir_path); 
+
+      //! Helper function to audit the directory    
+      void audit_directory(const char* dir_path);
+
+      //! Helper function to ingest the index file
+      void ingest_index_file(const char* dir_path, U8* buffer, FwSignedSizeType size);
+
+      //! Helper function to update the index file 
+      void update_index_file();
+
+      //! Helper function to evaluate the checksum of a file 
+      void evaluate_checksum(const char* file_path);
+
+      //! Helper function to concatenate files in a target directory 
+      bool concatenate_files(const char* dir_path, std::vector<Fw::String> filenames, char op_type);
+
+      //! Helper function to compute the md5 checksum of a file
+      void compute_md5_checksum(const char* file_path);
+
+      //! Helper function to verify the target file
+      bool verify_target(const char* dir_path);
+
+      //! Helper function to generate the md5 checksum from a buffer
+      unsigned char* generate_md5_from_buffer(U8* buffer, size_t size);
+
+      //! Helper function to complete the file generation 
+      void generate_file_from_object(
+          const char* file_path, 
+          const char* object_path, 
+          const char* target_file_type); 
+    
+      // ----------------------------------------------------------------------
+      // Private member variables 
+      // ----------------------------------------------------------------------
+
+      Os::Directory ota_dir; //!< Directory object for OTA directory
+      Os::Directory dir; //!< Directory object for directory
+      Os::Directory::Status dir_status; //!< Status of the directory object
+      Os::File tracking_file; //!< File object for tracking file
+      Os::File::Status tracking_status; //!< Status of the tracking file object
+      Os::File segment_file; 
+      Os::File::Status creation_status, size_status, read_status, segment_status;
+      Os::File index_file; //!< File object for index file
+      Os::File::Status index_status; //!< Status of the index file object
+      Os::Mutex directory_mutex; //!< Mutex for the directory object
+      Os::Mutex tracking_mutex; //!< Mutex for the tracking file object
+      Os::Mutex segment_mutex;
+      Os::Mutex index_mutex; //!< Mutex for the index file object
+      Fw::String logMessage; //!< Log message for debug events
+      Fw::String path_names[512]; //!< Buffer to hold directory names
+      long segment_file_size; 
+      long running_sum = 0; 
+      bool tracking_evaluated = false; //!< Flag for tracking file evaluation
+      U16 num_segment_dirs = 0; //!< Number of segment directories
+      U16 num_segment_files = 0; //!< Number of segment files
+      U16 num_segment_dirs_complete = 0; // Number of segment directories complete  
+      U16 num_files_complete = 0; // Number of segment files complete
+      const char* segment_size_descriptor      = "segment_size="; 
+      const char* target_size_descriptor       = "target_size=";
+      const char* n_segments_descriptor        = "n_segments=";
+      const char* n_bytes_remaining_descriptor = "n_bytes_remaining=";
+      const char* target_file_type_descriptor  = "target_file_type="; 
+      const char* concat_wildcard_descriptor   = "concat_wildcard="; 
+      const char* target_seg_descriptor        = "seg"; 
+      char segment_size_running_match[13]      = {}; 
+      char target_size_running_match[12]       = {};
+      char n_segments_running_match[11]        = {};
+      char n_bytes_remaining_running_match[18] = {};
+      char target_file_type_running_match[17]  = {};
+      char concat_wildcard_running_match[16]   = {};
+      char segment_size_chars[16]              = {};
+      char target_size_chars[64]               = {};
+      char n_segments_chars[16]                = {};
+      char n_bytes_remaining_chars[64]         = {};
+      char target_file_type_chars[16]          = {};
+
+
+      // ----------------------------------------------------------------------
+      // Variable Audit Section and where they are accessed 
+      // ----------------------------------------------------------------------
+
+      //! fn: ingest_tracking_file
+      Os::File::Status tracking_file_open_status;  
+      Os::File::Status tracking_size_status; 
+      Os::File::Status tracking_read_status;
+      U8 tracking_file_buffer;
+      U16 tracking_n_files;
+      std::vector<Fw::String> tracking_s_fnames;
+      // end - fn: ingest_tracking_file
+
+      //! fn: evaluate_tracking file 
+      U16 tracking_nf_complete;
+      std::vector<Fw::String> tracking_sf_complete;
+      bool tracking_eligible;
+      //! end - fn: evaluate_tracking_file  
+      
+      //! fn: ingest_index_file
+      //! vector of directory path mapped to the vector list of parameters held in the respective index.txt file 
+      //! vector of pair of (string, vector of pair of (string, string)) 
+      //! vector of (dir_names, vector of (param_name, param_value))
+      std::vector<std::pair<Fw::String, std::vector<std::pair<Fw::String, Fw::String>>>> dir_idx_param_vec; 
+      std::vector<std::pair<Fw::String, Fw::String>> idx_param_vec;
+      //! end - fn: ingest_index_file
+  
+      //! fn: audit_directory 
+      std::vector<Fw::String> seg_f_names; 
+      bool concat_present; 
+      //! end - fn: audit_directory
+
+
+  };
+}
+
+#endif

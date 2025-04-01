@@ -1,0 +1,216 @@
+// ======================================================================
+// \title  EpsUart.hpp
+// \author g83r
+// \brief  hpp file for EpsUart component implementation class
+// ======================================================================
+
+#ifndef EpsModule_EpsUart_HPP
+#define EpsModule_EpsUart_HPP
+
+#include "Components/EpsUart/EpsUartComponentAc.hpp"
+#include <semaphore.h> 
+#include <vector>
+#include <fcntl.h> 
+#include <pthread.h> 
+
+#define NUM_UART_BUFFERS 5
+#define UART_READ_BUFF_SIZE 40
+
+namespace EpsModule {
+
+  class EpsUart :
+    public EpsUartComponentBase
+  {
+
+    /* 
+     * EpsPacket: 
+     * - A struct to hold the data of a packet from the EPS 
+     */
+    struct EpsPacket { 
+      uint8_t syncByteHigh;
+      uint8_t syncByteLow;
+      uint8_t messageType; 
+      uint8_t messageLength;
+      uint8_t* messageData; 
+      uint8_t messageChecksumHigh; 
+      uint8_t messageChecksumLow;
+    }; 
+
+    enum MessageType { 
+      NOP = 0x00, 
+      ACK = 0x01, 
+      ERROR = 0x07, 
+      RESET = 0x80, 
+
+      GET_DATA = 0x02, 
+      RETURN_DATA = 0x03, 
+      SET_VALUE = 0x04,
+      RESEND = 0x05
+    };
+
+    enum SensorData { 
+      VBATT_VOLTAGE = 0x00,
+      VBATT_CURRENT = 0x01,
+      CELL_VOLTAGE = 0x02,
+      CELL_CURRENT = 0x03,
+      BATTERY_TEMP = 0x04,
+      HEATER_STATUS = 0x05,
+      SOLAR_PANEL_VOLTAGE = 0x06,
+      SOLAR_PANEL_CURRENT = 0x07,
+      VOLTAGE_5V0 = 0x08,
+      CURRENT_5V0 = 0x09,
+      VOLTAGE_3V3 = 0x0A,
+      CURRENT_3V3 = 0x0B,
+      SWITCH_STATE = 0x0C,
+      SENSOR_DATA = 0x0D,
+      FSM_STATE = 0x0E
+    }; 
+
+    enum States { 
+      STATE_INIT = 0x00,
+      STATE_IDLE = 0x01,
+      STATE_CRUISE = 0x02,
+      STATE_ERROR = 0x03,
+      STATE_LOW_PWR = 0x04,
+      STATE_STM_CTL = 0x05, 
+      SAFE_ANOM = 0x06,
+      RESTART = 0x07,
+    }; 
+
+    public:
+
+      // ----------------------------------------------------------------------
+      // Component construction and destruction
+      // ----------------------------------------------------------------------
+
+      //! Construct EpsUart object
+      EpsUart(
+          const char* const compName //!< The component name
+      );
+
+      //! Initialize EpsUart object
+      void init(
+          NATIVE_INT_TYPE queueDepth, //!< The queue depth
+          NATIVE_INT_TYPE instance = 0 //!< The instance number
+      );
+
+      //! Destroy EpsUart object
+      ~EpsUart();
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for user-defined typed input ports
+      // ----------------------------------------------------------------------
+
+      //! Handler implementation for UartRead
+      //!
+      //! Input port for receiving UART data
+      void UartRead_handler(
+          FwIndexType portNum, //!< The port number
+          Fw::Buffer& recvBuffer,
+          const Drv::RecvStatus& recvStatus
+      ) override;
+
+      //! Handler implementation for ExternalCommandBuffer
+      //!
+      //! Input port for sending commands to the EPS
+      void 
+      ExternCommandBuffer_handler(
+          FwIndexType portNum, //!< The port number
+          const EpsModule::EPS_CommandRecv &command
+      ) override;
+
+    PRIVATE:
+
+      // ----------------------------------------------------------------------
+      // Handler implementations for commands
+      // ----------------------------------------------------------------------
+
+      //! Handler implementation for command EPS_ReportStatus
+      //!
+      //! Command to report the status of the EPS
+      void EPS_ReportStatus_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq //!< The command sequence number
+      ) override;
+
+      //! Handler implementation for command EPS_SendString
+      //!
+      //! Command to send a string over UART to the EPS
+      void EPS_SendString_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          const Fw::CmdStringArg& msg //!< The message to send
+      ) override;
+
+      //! Handler implementation for command EPS_ListenToRadio
+      //!
+      //! Command to tell eps to listen to the Radio
+      void EPS_ListenToRadio_cmdHandler(
+          FwOpcodeType opCode, //!< The opcode
+          U32 cmdSeq, //!< The command sequence number
+          U8 listen //!< 1 to listen, 0 to stop listening
+      ) override;
+
+      // --- 
+      // Command handler implementations 
+      // --- 
+      uint16_t CalcChecksum(
+        uint8_t *buffer, 
+        uint8_t length
+      ); 
+
+      uint16_t CalcChecksum(
+        std::vector<U8> buffer 
+      );
+
+      void GetData(uint8_t* buffer);
+
+      void LogTelem(uint8_t* buffer);
+
+      void ResendPacket();
+
+      void ParseUart(uint8_t* buffer, U32 size);
+
+
+      void Resend();
+
+      void Preamble();
+
+      // --- 
+      // Private member variables 
+      // -- 
+
+      // telemetry values: 
+      U32 m_uartRecvBytes;
+      Fw::TlmString m_LastMsg;
+      F32 m_vbattVoltage;
+      F32 m_vbattCurrent;
+      F32 m_cellVoltage;
+      F32 m_cellCurrent;
+      F32 m_battTemp;
+      F32 m_solarPanelVoltage;
+      F32 m_solarPanelCurrent;
+      F32 m_solarPanelTemp;
+      F32 m_voltage5v0;
+      F32 m_current5v0;
+      F32 m_voltage3v3;
+      F32 m_current3v3;
+      U8  m_switchState;
+      // Serial Buffers
+      Fw::Buffer outBuff;
+      Fw::Buffer lastBuff;
+      std::vector<U8> packetBuff;
+      uint8_t packetSize;
+      Fw::Buffer m_recvBuffers[NUM_UART_BUFFERS];
+      BYTE m_uartBuffers[NUM_UART_BUFFERS][UART_READ_BUFF_SIZE];
+      
+
+
+
+  };
+
+}
+
+#endif
