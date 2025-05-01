@@ -11,3 +11,15 @@
 [submodule "ms1-fsw/libs/stm32flash"]
 	path = ms1-fsw/libs/stm32flash
 	url = https://github.com/ARMinARM/stm32flash.git
+[submodule "libs/zephyr/zephyr"]
+	path = libs/zephyr/zephyr
+	url = https://github.com/zephyrproject-rtos/zephyr.git
+[submodule "libs/stm32flash"]
+	path = libs/stm32flash
+	url = https://github.com/ARMinARM/stm32flash.git
+[submodule "libs/json"]
+	path = libs/json
+	url = https://github.com/nlohmann/json.git
+[submodule "libs/openssl-cmake"]
+	path = libs/openssl-cmake
+	url = https://github.com/viaduck/openssl-cmake.git
